@@ -1,10 +1,10 @@
-# Site-to-site VPN config consumed when mgmt_access_strategy = "ipsec_vpn".
-# Set vpn_config_path in terraform.tfvars to point at a copy of this file.
+# Site-to-site VPN definition consumed when mgmt_access_strategy = "ipsec_vpn",
+# referenced via vpn_config_path in terraform.tfvars.
 
-# Public IP of your on-prem VPN device (CPE / customer gateway).
+# Public IP of the on-prem VPN device (CPE / customer gateway).
 cpe_public_ip: "203.0.113.10"
 
-# On-prem CIDRs that should be reachable from AWS (and that operators connect FROM).
+# On-prem CIDRs reachable from AWS; operator connections to the mgmt plane source from these ranges.
 on_prem_cidrs:
   - "192.168.0.0/16"
 
@@ -22,8 +22,8 @@ routing: "STATIC"
 # requires an ASN on the customer gateway for STATIC (65000 default here).
 bgp_asn: 65000
 
-# Optional per-tunnel pre-shared keys. Leave psk unset to let AWS auto-generate
-# them (retrieve via 'aws ec2 describe-vpn-connections' after apply).
+# Optional per-tunnel pre-shared keys. When psk is omitted AWS generates the
+# keys (retrieve via 'aws ec2 describe-vpn-connections' after apply).
 tunnels:
   - psk: "REPLACE_WITH_TUNNEL1_PSK"
   - psk: "REPLACE_WITH_TUNNEL2_PSK"

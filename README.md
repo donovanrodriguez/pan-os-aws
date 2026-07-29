@@ -74,7 +74,7 @@ Terraform for a Palo Alto Networks VM-Series firewall fleet behind an AWS Gatewa
 | | | t3.small         | | |          | |  EKS private cluster       | |
 | | +--------+---------+ | |          | |  endpoint_private only     | |
 | +----------|-----------+ |          | |  2x m5.large workers       | |
-|            | 3306        |          | |  (AIRS AI GW Hybrid host)  | |
+|            | 3306        |          | |  (private workload spoke)  | |
 | +----------v-----------+ |          | +----------------------------+ |
 | | db-a 10.20.2.0/24 (a)| |          |  RT: 0.0.0.0/0 -> TGW          |
 | | db-b 10.20.3.0/24 (b)| |          +================================+
@@ -116,10 +116,10 @@ DATA-PATH SUMMARY
 
 ## Why GWLB instead of an HA pair
 
-The previous revision of this project ran a classic active/passive VM-Series HA pair: an EIP anchored on fw1's untrust ENI, and the PAN-OS AWS HA plugin moving secondary IPs, the EIP, and rewriting route tables on failover via IAM permissions. The GWLB architecture replaces all of that:
+The common alternative is a classic active/passive VM-Series HA pair: an EIP anchored on the primary firewall's untrust ENI, and the PAN-OS AWS HA plugin moving secondary IPs, the EIP, and rewriting route tables on failover via IAM permissions. The GWLB architecture replaces all of that:
 
 - **Scale-out, not failover.** The GWLB spreads flows across `fw_count` independent firewalls. Capacity is added by launching more instances, not by resizing a pair.
-- **No failover scripting.** GWLB health checks (TCP/443 against each data ENI) remove unhealthy targets automatically. The HA plugin, its IAM failover policy (`ec2:AssociateAddress`, `ec2:ReplaceRoute`, ...), and the failover-time route rewrites are gone; the firewall instance role now only reads the bootstrap bucket.
+- **No failover scripting.** GWLB health checks (TCP/443 against each data ENI) remove unhealthy targets automatically. The HA plugin, its IAM failover policy (`ec2:AssociateAddress`, `ec2:ReplaceRoute`, ...), and the failover-time route rewrites are not needed; the firewall instance role only reads the bootstrap bucket.
 - **Flow symmetry without route tricks.** GENEVE encapsulation preserves the original packet end-to-end, and GWLB flow stickiness (5-tuple hash) pins both directions of a flow to the same firewall, so stateful inspection works with N active devices.
 - **AZ symmetry via appliance mode.** The TGW hub attachment keeps `appliance_mode_support = enable`, so both directions of a cross-AZ flow enter the hub in the same AZ and hit the same AZ-local GWLBe/firewall path.
 - **Reusable inspection service.** The GWLB is exposed as a VPC endpoint service (`gwlb_endpoint_service_name`), so future distributed-ingress endpoints in spoke VPCs can consume the same fleet.
@@ -135,7 +135,7 @@ The previous revision of this project ran a classic active/passive VM-Series HA 
 | Bootstrap | Private S3 bucket `pan-hub-spoke-fw-bootstrap-<rand>`, per-FW prefixes `fw1/`, `fw2/` with `config/`, `license/`, `software/`, `content/` | `init-cfg.txt` rendered per `management_mode`; includes `plugin-op-commands=aws-gwlb-inspect:enable` |
 | Panorama | Single instance in mgmt-a (`10.10.1.10`), m5.2xlarge, 2 TB gp3 log volume (`management_mode = panorama` only) | required AMI ID variable |
 | Spoke-app | nginx Ubuntu VM (web) + RDS MySQL 8.0 across db-a/db-b; toggle `enable_nginx_mysql_workload` (default on) | SG allows 3306 only from the web subnet |
-| Spoke-eks | Private EKS cluster (`endpoint_private_access` only) + managed node group across nodes-a/nodes-b; toggle `enable_eks_workload` (default on) | doubles as the Prisma AIRS AI Gateway Hybrid data plane, see below |
+| Spoke-eks | Private EKS cluster (`endpoint_private_access` only) + managed node group across nodes-a/nodes-b; toggle `enable_eks_workload` (default on) | general-purpose private Kubernetes workload spoke; example use case below |
 | Mgmt access | one of: SSM interface endpoints, public jump host, or TGW site-to-site VPN | `mgmt_access_strategy` |
 
 ## Protected VPCs
@@ -229,7 +229,7 @@ After apply, `terraform output connect_hint` prints the exact command for the ac
    - Palo Alto Networks Panorama (BYOL)
    Accept them in the AWS Marketplace console, then copy the AMI ID for your region into `vm_series_ami_id` / `panorama_ami_id`. The Marketplace listing page shows the AMI ID per region under "Launch new instance"; alternatively use `aws ec2 describe-images --owners aws-marketplace --filters "Name=name,Values=*<listing name fragment>*"` and pick the BYOL image for your target PAN-OS version. This project does not hardcode product codes; verify the AMI against the listing you subscribed to.
 3. PAN-OS BYOL auth codes from your CSP/CSSP portal (`vm_series_auth_codes`). Panorama needs its own BYOL auth code (separate SKU) for first-boot licensing.
-4. `management_mode = panorama`: Panorama VM auth key. Chicken-and-egg: apply Panorama first, generate the key on it, then full apply (walkthrough below).
+4. `management_mode = panorama`: Panorama VM auth key. Circular dependency: apply Panorama first, generate the key on it, then run the full apply (walkthrough below).
 5. `management_mode = scm`: SCM tenant + folder + device cert registration PIN. No phased apply needed.
 6. SSH keypair at `ssh_public_key_path` (default `~/.ssh/id_rsa.pub`); it is uploaded as an EC2 key pair.
 
@@ -246,7 +246,7 @@ terraform init
 
 ### Panorama mode (default): two-phase apply
 
-The Panorama VM auth key is a chicken-and-egg dependency: Panorama must exist to mint the key, but firewalls need the key in their bootstrap.
+The Panorama VM auth key is a circular dependency: Panorama must exist to generate the key, but the firewalls need the key in their bootstrap.
 
 ```bash
 # Phase 1: stand up the hub network, Panorama, and the chosen mgmt-access module
@@ -306,7 +306,7 @@ aws ssm start-session \
 ```
 
 **Caveats:**
-- SSM sessions require the **SSM agent running on the target instance** with an instance profile that allows SSM. PAN-OS and Panorama images do not ship an SSM agent, so direct sessions against them will not work out of the box. Practical patterns: run a tiny SSM-managed Linux instance in a mgmt subnet and use `AWS-StartPortForwardingSessionToRemoteHost` toward the Panorama/FW private IPs, or pick `bastion_vm` / `ipsec_vpn` for direct reachability. The endpoints deployed here are the plumbing either way.
+- SSM sessions require the **SSM agent running on the target instance** with an instance profile that allows SSM. PAN-OS and Panorama images do not ship an SSM agent, so direct sessions against them will not work out of the box. Practical patterns: run a small SSM-managed Linux instance in a mgmt subnet and use `AWS-StartPortForwardingSessionToRemoteHost` toward the Panorama/FW private IPs, or pick `bastion_vm` / `ipsec_vpn` for direct reachability. The endpoints deployed here support either approach.
 - Session Manager needs the `session-manager-plugin` installed next to the AWS CLI on your workstation.
 
 ### Strategy B: `bastion_vm`
@@ -343,7 +343,7 @@ ssh -J ubuntu@$BASTION admin@<fw mgmt ip from: terraform output fw_mgmt_ips>
 
 **Caveats:**
 - The validation `check` rejects `admin_source_cidrs = ["0.0.0.0/0"]` for this strategy. Set a specific CIDR.
-- You own bastion patching. First login: `sudo apt-get update && sudo apt-get -y upgrade`.
+- Bastion patching is self-managed. On first login: `sudo apt-get update && sudo apt-get -y upgrade`.
 
 ### Strategy C: `ipsec_vpn`
 
@@ -378,7 +378,7 @@ terraform apply \
   -target=module.panorama \
   -target=module.mgmt_access_vpn
 
-# 2. Grab the AWS side of the tunnels
+# 2. Retrieve the AWS-side tunnel addresses
 terraform output vpn_tunnel_public_ips
 
 # 3. If you didn't set PSKs in YAML, fetch the auto-generated ones:
@@ -408,15 +408,21 @@ terraform apply
 - Mgmt SGs only permit ingress from `admin_cidrs` (defaults to `on_prem_cidrs`). Confirm operator subnets are covered.
 - For BGP routing set `routing: "BGP"` plus your `bgp_asn`; on-prem routes then come from BGP instead of the static TGW routes.
 
-## EKS spoke as the Prisma AIRS AI Gateway Hybrid data plane
+## EKS spoke: private Kubernetes workloads
 
-The `eks` spoke is intentionally shaped to host the **Prisma AIRS AI Gateway Hybrid** data plane:
+The `eks` spoke is a general-purpose private Kubernetes workload spoke behind the firewall fleet:
 
-- **Multi-AZ nodes**: the managed node group spans `nodes-a`/`nodes-b`, matching the gateway's availability expectations.
-- **All worker egress flows through the PAN firewall**: the spoke's only default route is the TGW, so every image pull and control-plane call is inspected in the hub.
+- **Multi-AZ nodes**: the managed node group spans `nodes-a`/`nodes-b`.
+- **All worker egress flows through the PAN firewall**: the spoke's only default route is the TGW, so every image pull and control-plane call is inspected in the hub. Node bootstrap and chart installs hang on image pulls until firewall policy permits the registries a workload requires.
+- **Private API endpoint**: `eks_deploy_sample_workload = false` by default because the kubernetes provider on the Terraform host cannot reach the private endpoint without a tunnel/VPN or an in-VPC runner (`terraform output eks_update_kubeconfig_command`).
+
+### Example use case: hosting a Prisma AIRS AI Gateway Hybrid data plane
+
+The spoke's shape satisfies the AI Gateway Hybrid data plane requirements:
+
+- The multi-AZ node group matches the gateway's availability expectations, and all worker egress is firewall-inspected.
 - **Firewall policy must allow** the workers to reach `registry.portkey.ai` plus the container registries the charts pull from (e.g. `mcr.microsoft.com`, `quay.io`, `ghcr.io`, Docker Hub) and the SCM service edge for gateway registration. Until those rules exist, node bootstrap and `helm install` will hang on pulls.
 - The `helm install` of the AI Gateway data plane happens per the AIGW deployment guide, from a host that can reach the private EKS endpoint (`terraform output eks_update_kubeconfig_command`).
-- `eks_deploy_sample_workload = false` by default because the API endpoint is private; the kubernetes provider on your laptop cannot reach it without a tunnel/VPN or an in-VPC runner.
 
 ## Cleanup
 
@@ -426,12 +432,12 @@ terraform destroy
 
 Notes:
 
-- RDS: `skip_final_snapshot = true` and `deletion_protection = false` are set for lab teardown. If you flipped either for production data, unset them and re-apply before destroy.
+- RDS: `skip_final_snapshot = true` and `deletion_protection = false` are set for non-production teardown. If either was changed to protect production data, revert and re-apply before destroy.
 - EKS clusters take ~10 min to delete; internal NLBs created by the sample Service must be gone first (destroy handles it when the sample workload was applied via TF).
 
 ## Caveats + things to verify before prod
 
-- **AMI IDs are inputs on purpose.** Marketplace AMI IDs differ per region and PAN-OS version, so this project requires `vm_series_ami_id` / `panorama_ami_id` instead of guessing product codes. Make sure the AMI is the **BYOL** flavor; PAYG changes the licensing model and the bootstrap auth codes won't apply.
+- **AMI IDs are required inputs by design.** Marketplace AMI IDs differ per region and PAN-OS version, so this project requires `vm_series_ami_id` / `panorama_ami_id` instead of assuming product codes. Make sure the AMI is the **BYOL** flavor; PAYG changes the licensing model and the bootstrap auth codes won't apply.
 - **Instance sizes**: `m5.xlarge` (VM-Series) and `m5.2xlarge` (Panorama) are common defaults; consult the PAN-OS supported instance list for your target version before resizing.
 - **`mgmt-interface-swap` is intentionally absent** from the bootstrap. PAN documents the swap as needed only when the GWLB target type is `instance` (traffic hits the first ENI). This design registers each firewall's dataplane ENI IP as an `ip` target, where PAN states the swap is not required, so mgmt stays on device index 0 and the dataplane on index 1.
 - **GWLB health checks need firewall-side config.** The target group probes TCP/443 against each data ENI (PAN docs: HTTP is refused by the VM-Series; HTTPS or TCP are the options). Targets stay unhealthy until you push an ethernet1/1 config with an interface management profile permitting HTTPS. Until then the GWLBe drops traffic; verify target health in the EC2 console after the first policy push.

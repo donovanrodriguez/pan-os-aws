@@ -4,6 +4,24 @@ resource "aws_key_pair" "admin" {
   tags       = var.tags
 }
 
+# Most recent VM-Series image for the configured Marketplace product code.
+# vm_series_ami_id overrides the lookup when version pinning is required.
+data "aws_ami" "vm_series" {
+  count       = var.vm_series_ami_id == null ? 1 : 0
+  most_recent = true
+  owners      = ["aws-marketplace"]
+
+  filter {
+    name   = "name"
+    values = ["PA-VM-AWS*"]
+  }
+
+  filter {
+    name   = "product-code"
+    values = [var.vm_series_product_code]
+  }
+}
+
 module "bootstrap_s3" {
   source = "./modules/bootstrap-s3"
 
@@ -99,7 +117,7 @@ module "firewalls" {
   prefix = var.resource_prefix
   tags   = var.tags
 
-  ami_id        = var.vm_series_ami_id
+  ami_id        = coalesce(var.vm_series_ami_id, one(data.aws_ami.vm_series[*].id))
   instance_type = var.vm_series_instance_type
   key_name      = aws_key_pair.admin.key_name
 

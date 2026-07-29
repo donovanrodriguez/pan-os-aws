@@ -13,3 +13,4 @@ override.tf.json
 terraform.rc
 modules/bootstrap-s3/templates/fw*-init-cfg.txt
 modules/bootstrap-s3/templates/fw*-authcodes
+vpn-config.yaml

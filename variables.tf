@@ -20,7 +20,7 @@ variable "tags" {
 }
 
 variable "ssh_public_key_path" {
-  description = "Path to the SSH public key used for EC2 instances (key pair uploaded once, referenced everywhere)."
+  description = "Path to the SSH public key used for EC2 instances. Uploaded as a single EC2 key pair referenced by all instances."
   type        = string
   default     = "~/.ssh/id_rsa.pub"
 }
@@ -40,7 +40,7 @@ variable "protected_vpcs" {
       subnets         : map of subnet name -> { cidr, az_index }. az_index picks from the region's available AZs.
                         Workload modules expect specific names (nginx_mysql: "web" + "db-a" + "db-b"; EKS: "nodes-a" + "nodes-b").
       create_vpc      : true creates a new VPC + subnets here. false attaches an existing VPC by ID (the existing VPC
-                        must already contain at least one subnet; you keep ownership of its subnets and route tables).
+                        must already contain at least one subnet; its subnets and route tables remain unmanaged).
       existing_vpc_id : required when create_vpc = false.
       description     : optional, tag for traceability.
   EOT
@@ -116,11 +116,19 @@ variable "fw_count" {
 }
 
 variable "vm_series_ami_id" {
-  description = "AMI ID of the VM-Series BYOL Marketplace image in var.region. See README > Prereqs for how to find it."
+  description = "AMI ID of the VM-Series BYOL Marketplace image in var.region. Null selects the most recent image for vm_series_product_code automatically."
   type        = string
+  default     = null
 }
 
-# Consult the PAN-OS supported instance list for your PAN-OS version before changing.
+# BYOL listing product code, as published in the PaloAltoNetworks/terraform-aws-swfw-modules AMI lookup.
+variable "vm_series_product_code" {
+  description = "Marketplace product code used for the automatic VM-Series AMI lookup. The default is the BYOL listing."
+  type        = string
+  default     = "6njl1pau431dv1qxipg63mvah"
+}
+
+# Consult the PAN-OS supported instance list for the target PAN-OS version before changing.
 variable "vm_series_instance_type" {
   description = "EC2 instance type for VM-Series firewalls."
   type        = string
@@ -128,8 +136,9 @@ variable "vm_series_instance_type" {
 }
 
 variable "panorama_ami_id" {
-  description = "AMI ID of the Panorama BYOL Marketplace image in var.region. Required even in scm mode (unused there). See README > Prereqs."
+  description = "AMI ID of the Panorama BYOL Marketplace image in var.region. Required when management_mode = panorama; unused in scm mode."
   type        = string
+  default     = null
 }
 
 # Consult the Panorama setup prerequisites in the PAN docs before downsizing.
@@ -156,7 +165,7 @@ variable "management_mode" {
 }
 
 variable "scm_folder" {
-  description = "Strata Cloud Manager folder the firewalls register into (init-cfg dgname). Create it in SCM (Workflows > NGFW Setup > Folder Management) before applying. Required when management_mode = scm."
+  description = "Strata Cloud Manager folder the firewalls register into (init-cfg dgname). The folder must exist in SCM (Workflows > NGFW Setup > Folder Management) before apply. Required when management_mode = scm."
   type        = string
   default     = null
 }
@@ -176,7 +185,7 @@ variable "scm_registration_pin_value" {
 }
 
 variable "panorama_vm_auth_key" {
-  description = "Panorama VM auth key used by FW bootstrap. Generate on Panorama after first boot: 'request bootstrap vm-auth-key generate lifetime <hours>'. Required when management_mode = panorama."
+  description = "Panorama VM auth key used by FW bootstrap. Generated on Panorama after first boot with 'request bootstrap vm-auth-key generate lifetime <hours>'. Required when management_mode = panorama."
   type        = string
   sensitive   = true
   default     = null
@@ -226,7 +235,7 @@ variable "mysql_admin_username" {
 }
 
 variable "mysql_admin_password" {
-  description = "RDS MySQL admin password. Required when enable_nginx_mysql_workload = true. Provide via TF_VAR_mysql_admin_password or tfvars; do not commit."
+  description = "RDS MySQL admin password. Required when enable_nginx_mysql_workload = true. Supplied via TF_VAR_mysql_admin_password or an uncommitted tfvars file."
   type        = string
   sensitive   = true
   default     = null
@@ -245,7 +254,7 @@ variable "mysql_storage_gb" {
 }
 
 variable "enable_eks_workload" {
-  description = "Deploy the example private EKS cluster into a protected VPC. Doubles as the Prisma AIRS AI Gateway Hybrid data plane host (see README)."
+  description = "Deploy the private EKS cluster into a protected VPC as a general-purpose Kubernetes workload spoke. See README for an example use case (Prisma AIRS AI Gateway Hybrid data plane)."
   type        = bool
   default     = true
 }
@@ -256,8 +265,7 @@ variable "eks_target_vpc" {
   default     = "eks"
 }
 
-# Check the currently supported EKS versions before bumping:
-# aws eks describe-cluster-versions --query 'clusterVersions[].clusterVersion'
+# Supported versions: aws eks describe-cluster-versions --query 'clusterVersions[].clusterVersion'
 variable "eks_kubernetes_version" {
   description = "Kubernetes version for EKS."
   type        = string

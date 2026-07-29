@@ -70,7 +70,7 @@ resource "aws_route_table_association" "this" {
 }
 
 # Existing-VPC attach path: discover the VPC's subnets so the TGW attachment
-# can pick one per AZ. Route tables in an existing VPC stay under your control.
+# can pick one per AZ. Route tables in an existing VPC remain unmanaged here.
 data "aws_subnets" "existing" {
   count = var.create_vpc ? 0 : 1
   filter {

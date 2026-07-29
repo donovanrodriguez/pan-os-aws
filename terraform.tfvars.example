@@ -1,5 +1,3 @@
-# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored; keep it that way.
-
 region = "us-east-1"
 
 # --- Required: Marketplace AMI IDs (see README > Prereqs for lookup commands) ---
@@ -13,7 +11,7 @@ mgmt_access_strategy = "ssm"
 
 # --- Management plane: panorama | scm ---
 management_mode = "panorama"
-# Phase 2 (panorama mode): paste after Panorama first-boot
+# panorama mode: generated on Panorama during phase 2 of the two-phase apply (README > Usage)
 # panorama_vm_auth_key = ""
 
 # SCM mode instead:

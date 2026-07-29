@@ -130,7 +130,7 @@ resource "aws_db_instance" "mysql" {
   multi_az            = false
   publicly_accessible = false
 
-  # Lab-friendly teardown; enable both for production data.
+  # Non-production teardown defaults; enable both when the database holds production data.
   skip_final_snapshot = true
   deletion_protection = false
 

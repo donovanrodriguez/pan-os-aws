@@ -73,7 +73,7 @@ output "bastion_public_ip" {
 }
 
 output "vpn_tunnel_public_ips" {
-  description = "AWS-side public IPs of the site-to-site VPN tunnels (ipsec_vpn strategy). Configure your CPE against these."
+  description = "AWS-side public IPs of the site-to-site VPN tunnels (ipsec_vpn strategy). Peer addresses for the on-prem customer gateway device."
   value       = local.use_ipsec_vpn ? module.mgmt_access_vpn[0].tunnel_public_ips : null
 }
 
@@ -105,6 +105,6 @@ output "eks_cluster_name" {
 }
 
 output "eks_update_kubeconfig_command" {
-  description = "Run to fetch the kubeconfig for the EKS cluster (private endpoint: requires tunnel/VPN/in-VPC runner)."
+  description = "Command that fetches the kubeconfig for the EKS cluster (private endpoint: requires a tunnel, VPN, or in-VPC runner)."
   value       = var.enable_eks_workload ? "aws eks update-kubeconfig --name ${try(module.eks_workload[0].cluster_name, "")} --region ${var.region}" : null
 }

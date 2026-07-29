@@ -126,3 +126,10 @@ check "workload_target_vpcs_are_managed" {
     error_message = "Workload modules can only deploy into VPCs where create_vpc = true (TF needs to create the subnets they reference). For create_vpc = false, layer your own workload TF on top."
   }
 }
+
+check "panorama_ami_required" {
+  assert {
+    condition     = var.management_mode != "panorama" || var.panorama_ami_id != null
+    error_message = "management_mode = \"panorama\" requires panorama_ami_id."
+  }
+}
