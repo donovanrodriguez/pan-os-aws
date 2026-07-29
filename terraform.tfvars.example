@@ -1,0 +1,31 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored; keep it that way.
+
+region = "us-east-1"
+
+# --- Required: Marketplace AMI IDs (see README > Prereqs for lookup commands) ---
+vm_series_ami_id = "ami-xxxxxxxxxxxxxxxxx"
+panorama_ami_id  = "ami-xxxxxxxxxxxxxxxxx"
+
+# --- Mgmt access: ssm | bastion_vm | ipsec_vpn ---
+mgmt_access_strategy = "ssm"
+# admin_source_cidrs = ["203.0.113.42/32"] # required (non-0.0.0.0/0) for bastion_vm
+# vpn_config_path    = "./vpn-config.yaml" # required for ipsec_vpn
+
+# --- Management plane: panorama | scm ---
+management_mode = "panorama"
+# Phase 2 (panorama mode): paste after Panorama first-boot
+# panorama_vm_auth_key = ""
+
+# SCM mode instead:
+# management_mode            = "scm"
+# scm_folder                 = "AWS-USE1"
+# scm_registration_pin_id    = ""
+# scm_registration_pin_value = ""
+
+# --- Licensing ---
+# vm_series_auth_codes = ["A1234567"]
+
+# --- Workloads ---
+mysql_admin_password = "CHANGE-ME-before-apply"
+# enable_eks_workload        = true
+# eks_deploy_sample_workload = false

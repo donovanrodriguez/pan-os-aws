@@ -1,0 +1,29 @@
+# Site-to-site VPN config consumed when mgmt_access_strategy = "ipsec_vpn".
+# Set vpn_config_path in terraform.tfvars to point at a copy of this file.
+
+# Public IP of your on-prem VPN device (CPE / customer gateway).
+cpe_public_ip: "203.0.113.10"
+
+# On-prem CIDRs that should be reachable from AWS (and that operators connect FROM).
+on_prem_cidrs:
+  - "192.168.0.0/16"
+
+# Optional: restrict mgmt SG ingress to a subset of on_prem_cidrs (e.g. ops jump network).
+# Defaults to on_prem_cidrs when omitted.
+admin_cidrs:
+  - "192.168.50.0/24"
+
+# Routing: STATIC | BGP
+# STATIC installs on_prem_cidrs into the TGW route tables pointing at the VPN attachment.
+# BGP exchanges routes over the tunnels using bgp_asn.
+routing: "STATIC"
+
+# On-prem BGP ASN, set on the customer gateway. Used for BGP routing; AWS still
+# requires an ASN on the customer gateway for STATIC (65000 default here).
+bgp_asn: 65000
+
+# Optional per-tunnel pre-shared keys. Leave psk unset to let AWS auto-generate
+# them (retrieve via 'aws ec2 describe-vpn-connections' after apply).
+tunnels:
+  - psk: "REPLACE_WITH_TUNNEL1_PSK"
+  - psk: "REPLACE_WITH_TUNNEL2_PSK"

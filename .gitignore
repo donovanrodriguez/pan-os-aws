@@ -1,0 +1,15 @@
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+modules/bootstrap-s3/templates/fw*-init-cfg.txt
+modules/bootstrap-s3/templates/fw*-authcodes
