@@ -35,8 +35,8 @@ module "tgw" {
   # VPC routes targeting the TGW are created inside the tgw module so they
   # sequence after the corresponding VPC attachment exists (AWS rejects a
   # route to a TGW the VPC is not yet attached to).
-  hub_trust_route_table_id = module.hub_network.trust_route_table_id
-  hub_mgmt_route_table_id  = module.hub_network.mgmt_route_table_id
+  hub_gwlbe_route_table_ids = module.hub_network.gwlbe_route_table_ids
+  hub_mgmt_route_table_id   = module.hub_network.mgmt_route_table_id
 
   spokes = {
     for k, v in var.protected_vpcs : k => {
@@ -67,8 +67,10 @@ module "hub_network" {
   subnets  = local.hub_subnets
 
   # SCM-managed FWs need outbound internet from the mgmt ENI to reach the SCM
-  # service edge; the mgmt subnets are otherwise private.
-  enable_mgmt_nat_gateway = local.use_scm
+  # service edge; the mgmt subnets are otherwise private. The per-AZ egress
+  # NAT gateways always exist for inspected traffic; this only adds the mgmt
+  # route to them.
+  enable_mgmt_nat_route = local.use_scm
 
   mgmt_ingress_cidrs = local.mgmt_ingress_cidrs
   mgmt_subnet_cidrs  = local.mgmt_subnet_cidrs
@@ -92,7 +94,7 @@ module "panorama" {
 }
 
 module "firewalls" {
-  source = "./modules/firewall-ha"
+  source = "./modules/firewall-fleet"
 
   prefix = var.resource_prefix
   tags   = var.tags
@@ -103,22 +105,38 @@ module "firewalls" {
 
   fws = {
     for k, fw in local.fws : k => {
-      hostname          = fw.hostname
-      mgmt_subnet_id    = module.hub_network.subnet_ids["mgmt_${fw.az_suffix}"]
-      untrust_subnet_id = module.hub_network.subnet_ids["untrust_${fw.az_suffix}"]
-      trust_subnet_id   = module.hub_network.subnet_ids["trust_${fw.az_suffix}"]
-      mgmt_ip           = fw.mgmt_ip
-      untrust_ip        = fw.untrust_ip
-      trust_ip          = fw.trust_ip
+      hostname       = fw.hostname
+      mgmt_subnet_id = module.hub_network.subnet_ids["mgmt_${fw.az_suffix}"]
+      data_subnet_id = module.hub_network.subnet_ids["data_${fw.az_suffix}"]
+      mgmt_ip        = fw.mgmt_ip
+      data_ip        = fw.data_ip
     }
   }
 
-  mgmt_sg_id    = module.hub_network.fw_mgmt_sg_id
-  untrust_sg_id = module.hub_network.fw_untrust_sg_id
-  trust_sg_id   = module.hub_network.fw_trust_sg_id
+  mgmt_sg_id = module.hub_network.fw_mgmt_sg_id
+  data_sg_id = module.hub_network.fw_data_sg_id
 
   bootstrap_bucket_name = module.bootstrap_s3.bucket_name
   bootstrap_bucket_arn  = module.bootstrap_s3.bucket_arn
+}
+
+module "gwlb" {
+  source = "./modules/gwlb"
+
+  prefix = var.resource_prefix
+  tags   = var.tags
+
+  vpc_id          = module.hub_network.vpc_id
+  data_subnet_ids = module.hub_network.data_subnet_ids
+  gwlbe_subnets   = module.hub_network.gwlbe_subnet_ids
+
+  fw_data_ips = module.firewalls.fw_data_ips
+
+  # Routes targeting the GWLB endpoints live in the gwlb module so they
+  # sequence after the endpoints exist.
+  trust_route_table_ids  = module.hub_network.trust_route_table_ids
+  egress_route_table_ids = module.hub_network.egress_route_table_ids
+  spoke_cidrs            = local.spoke_cidrs
 }
 
 module "protected_spokes" {

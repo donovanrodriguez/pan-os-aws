@@ -1,57 +1,68 @@
 # pan-os-aws
 
-Terraform for a Palo Alto Networks VM-Series HA pair fronting a Transit Gateway hub-and-spoke AWS topology in `us-east-1`. The security VPC holds the firewall pair (AZ-striped a/b), every spoke's default route lands on the TGW, and the TGW's spoke route table forwards everything into the hub for inspection. Spoke-to-spoke traffic hairpins through the firewalls.
+Terraform for a Palo Alto Networks VM-Series firewall fleet behind an AWS Gateway Load Balancer (GWLB), fronting a Transit Gateway hub-and-spoke topology in `us-east-1`. This follows the PAN best-practice centralized inspection architecture: the security VPC holds an N-instance firewall fleet (AZ-striped a/b) targeted by a GWLB over GENEVE, every spoke's default route lands on the TGW, and the TGW's spoke route table forwards everything into the hub where per-AZ GWLB endpoints steer it through the firewalls. Spoke-to-spoke traffic hairpins through the fleet; internet egress is centralized behind per-AZ NAT gateways.
 
 ```
-                                       Internet
-                                          |
-                                          v
-+================================================================================+
-|                    HUB (SECURITY) VPC  10.10.0.0/16  (us-east-1)               |
+                                     Internet
+                                        ^
+                                        |
++=======================================|========================================+
+|                    HUB (SECURITY) VPC | 10.10.0.0/16  (us-east-1)              |
+|                                +------+------+                                 |
+|                                |     IGW     |                                 |
+|                                +--+-------+--+                                 |
+|                                   |       |                                    |
+|  +--------------------------------+--+ +--+--------------------------------+   |
+|  | EGRESS-A 10.10.10.0/24 (AZ a)     | | EGRESS-B 10.10.11.0/24 (AZ b)     |   |
+|  |   NAT GW a                        | |   NAT GW b                        |   |
+|  |   rt: 0/0 -> IGW                  | |   rt: 0/0 -> IGW                  |   |
+|  |       spokes -> GWLBe-a           | |       spokes -> GWLBe-b           |   |
+|  +--------------------------------+--+ +--+--------------------------------+   |
+|                                   |       |                                    |
+|  +--------------------------------+--+ +--+--------------------------------+   |
+|  | GWLBE-A 10.10.8.0/24 (AZ a)       | | GWLBE-B 10.10.9.0/24 (AZ b)       |   |
+|  |   GWLB endpoint a                 | |   GWLB endpoint b                 |   |
+|  |   rt: 0/0 -> NAT GW a             | |   rt: 0/0 -> NAT GW b             |   |
+|  |       spokes -> TGW               | |       spokes -> TGW               |   |
+|  +---------------+-------------------+ +-------------------+---------------+   |
+|                  |         GENEVE (UDP 6081)               |                   |
+|  +---------------v-------------------+ +-------------------v---------------+   |
+|  | DATA-A 10.10.2.0/24 (AZ a)        | | DATA-B 10.10.5.0/24 (AZ b)        |   |
+|  |   GWLB node a                     | |   GWLB node b                     |   |
+|  |   FW1 data ENI .11 (idx 1,       <---> FW2 data ENI .12 (idx 1,        |   |
+|  |   src/dst check off)              | |   src/dst check off)              |   |
+|  |                                   | |                                   |   |
+|  |   VM-Series fleet, fw_count       | |   AZ-striped: fw1/fw3 -> a,       |   |
+|  |   instances, m5.xlarge BYOL       | |   fw2/fw4 -> b, ...               |   |
+|  +-----------------------------------+ +-----------------------------------+   |
 |                                                                                |
-|   +-----------------+                              +----------------------+    |
-|   |  IGW            |                              |  NAT GW (scm mode)   |    |
-|   |  (north/south)  |                              |  mgmt egress to SCM  |    |
-|   +--------+--------+                              +-----------+----------+    |
-|            |                                                   |               |
-|   +--------v-------------------------------+  +----------------v---------+    |
-|   |  UNTRUST-A  10.10.2.0/24  (AZ a)       |  |  UNTRUST-B  10.10.5.0/24 |    |
-|   |  FW1 untrust ENI .11  <-- EIP          |  |  FW2 untrust ENI .12     |    |
-|   |  (source/dest check off)               |  |  (source/dest check off) |    |
-|   +--------+-------------------------------+  +----------------+---------+    |
-|            |                                                   |               |
-|   +--------v-------------------+              +----------------v---------+    |
-|   |  VM-Series FW1  (AZ a)     |              |  VM-Series FW2  (AZ b)   |    |
-|   |  m5.xlarge, BYOL           |              |  m5.xlarge, BYOL         |    |
-|   |  mgmt .11 / trust .11      |              |  mgmt .12 / trust .12    |    |
-|   +--------+-------------------+              +----------------+---------+    |
-|            |                                                   |               |
-|   +--------v-------------------------------+  +----------------v---------+    |
-|   |  TRUST-A  10.10.3.0/24  (AZ a)         |  |  TRUST-B  10.10.6.0/24   |    |
-|   |  FW1 trust ENI .11                     |  |  FW2 trust ENI .12       |    |
-|   |  [TGW attachment ENI lives here]       |  |  [TGW attachment ENI]    |    |
-|   +--------+-------------------------------+  +----------------+---------+    |
-|            |                                                   |               |
-|   +--------+---------------------------------------------------+---------+    |
-|   |  MGMT-A  10.10.1.0/24 (AZ a)          MGMT-B  10.10.4.0/24 (AZ b)    |    |
-|   |  Panorama .10 (panorama mode)         FW2 mgmt ENI .12               |    |
-|   |  FW1 mgmt ENI .11                                                    |    |
-|   |  [SSM interface endpoints here when mgmt_access_strategy = ssm]      |    |
-|   +----------------------------------+-----------------------------------+    |
-|                                      |                                        |
-+======================================|=========================================+
-                                       |
-                              +--------v--------+
-                              |  TRANSIT GW     |
-                              |  +-----------+  |
-                              |  | hub-rt    |  |  <-- spoke CIDRs -> spoke attachments
-                              |  +-----------+  |      on-prem CIDRs -> VPN attachment
-                              |  | spoke-rt  |  |  <-- 0.0.0.0/0 -> hub attachment
-                              |  +-----------+  |      (appliance mode on hub attach)
-                              +--+-----------+--+
-                                 |           |
-                     +-----------+           +-----------+
-                     v                                   v
+|  +-----------------------------------+ +-----------------------------------+   |
+|  | TRUST-A 10.10.3.0/24 (AZ a)       | | TRUST-B 10.10.6.0/24 (AZ b)       |   |
+|  |   [TGW attachment ENI]            | |   [TGW attachment ENI]            |   |
+|  |   rt: 0/0 -> GWLBe-a              | |   rt: 0/0 -> GWLBe-b              |   |
+|  +---------------+-------------------+ +-------------------+---------------+   |
+|                  |                                         |                   |
+|  +---------------+-----------------------------------------+---------------+   |
+|  | MGMT-A 10.10.1.0/24 (AZ a)          MGMT-B 10.10.4.0/24 (AZ b)          |   |
+|  |   Panorama .10 (panorama mode)      FW2 mgmt ENI .12                    |   |
+|  |   FW1 mgmt ENI .11                                                      |   |
+|  |   [SSM interface endpoints here when mgmt_access_strategy = ssm]        |   |
+|  |   rt: 0/0 -> NAT GW a (scm mode only)                                   |   |
+|  +------------------------------------+------------------------------------+   |
+|                                       |                                        |
++=======================================|========================================+
+                                        |
+                               +--------v--------+
+                               |  TRANSIT GW     |
+                               |  +-----------+  |
+                               |  | hub-rt    |  |  <-- spoke CIDRs -> spoke attachments
+                               |  +-----------+  |      on-prem CIDRs -> VPN attachment
+                               |  | spoke-rt  |  |  <-- 0.0.0.0/0 -> hub attachment
+                               |  +-----------+  |      (appliance mode on hub attach)
+                               +--+-----------+--+
+                                  |           |
+                      +-----------+           +-----------+
+                      v                                   v
 +==========================+          +================================
 |  SPOKE-APP VPC           |          |  SPOKE-EKS VPC                 |
 |  10.20.0.0/16            |          |  10.30.0.0/16                  |
@@ -76,31 +87,52 @@ Terraform for a Palo Alto Networks VM-Series HA pair fronting a Transit Gateway 
 LEGEND
   ==  VPC boundary
   --  subnet boundary
-  ->  traffic flow
+  ->  traffic flow / route target
 
 DATA-PATH SUMMARY
-  N->S ingress : Internet -> EIP on FW1 untrust ENI -> PAN sec policy ->
-                 FW trust ENI -> trust RT (spoke CIDR -> TGW) -> hub-rt -> spoke
   S->N egress  : spoke -> RT 0/0 -> TGW spoke-rt -> hub attachment (trust
-                 subnets, appliance mode) -> active FW -> SNAT untrust -> IGW
-  E->W         : spoke-app -> TGW spoke-rt -> hub -> FW inspection -> trust RT
-                 -> TGW hub-rt -> spoke-eks   (no direct spoke-to-spoke path)
+                 subnets, appliance mode) -> trust rt 0/0 -> AZ-local GWLBe ->
+                 GWLB -> firewall data ENI (GENEVE) -> inspected -> back via
+                 GWLBe -> gwlbe rt 0/0 -> AZ NAT GW -> egress rt 0/0 -> IGW
+  N->S return  : IGW -> NAT GW (de-NAT) -> egress rt spoke CIDR -> AZ-local
+                 GWLBe -> same firewall (GWLB flow stickiness) -> gwlbe rt
+                 spoke CIDR -> TGW hub-rt -> spoke
+  E->W         : spoke-app -> TGW spoke-rt -> hub -> trust rt -> GWLBe -> FW
+                 inspection -> gwlbe rt spoke CIDR -> TGW hub-rt -> spoke-eks
+                 (no direct spoke-to-spoke path)
+  N->S ingress : this design centralizes egress + east-west. Inbound to spoke
+                 apps is served today via the return path above (NAT'd flows
+                 only). Unsolicited inbound would use the distributed-GWLBe
+                 pattern: per-spoke endpoints consuming
+                 gwlb_endpoint_service_name plus IGW edge routes in the spoke.
+                 Documented as a future option, not built here.
   Mgmt path    : operator -> {SSM endpoints | bastion subnet | VPN attachment}
                  -> FW/Panorama mgmt ENIs in the hub mgmt subnets. No mgmt
                  plane on the internet.
-  HA           : plugin-driven failover; the surviving FW re-associates the
-                 untrust EIP / secondary IPs and rewrites routes via the
-                 instance-profile IAM permissions (${prefix}-fw-ha-*).
+  Health/scale : GWLB target group health-checks each firewall's data ENI
+                 (TCP/443). Unhealthy targets stop receiving new flows; add
+                 capacity by raising fw_count. No failover scripting.
 ```
+
+## Why GWLB instead of an HA pair
+
+The previous revision of this project ran a classic active/passive VM-Series HA pair: an EIP anchored on fw1's untrust ENI, and the PAN-OS AWS HA plugin moving secondary IPs, the EIP, and rewriting route tables on failover via IAM permissions. The GWLB architecture replaces all of that:
+
+- **Scale-out, not failover.** The GWLB spreads flows across `fw_count` independent firewalls. Capacity is added by launching more instances, not by resizing a pair.
+- **No failover scripting.** GWLB health checks (TCP/443 against each data ENI) remove unhealthy targets automatically. The HA plugin, its IAM failover policy (`ec2:AssociateAddress`, `ec2:ReplaceRoute`, ...), and the failover-time route rewrites are gone; the firewall instance role now only reads the bootstrap bucket.
+- **Flow symmetry without route tricks.** GENEVE encapsulation preserves the original packet end-to-end, and GWLB flow stickiness (5-tuple hash) pins both directions of a flow to the same firewall, so stateful inspection works with N active devices.
+- **AZ symmetry via appliance mode.** The TGW hub attachment keeps `appliance_mode_support = enable`, so both directions of a cross-AZ flow enter the hub in the same AZ and hit the same AZ-local GWLBe/firewall path.
+- **Reusable inspection service.** The GWLB is exposed as a VPC endpoint service (`gwlb_endpoint_service_name`), so future distributed-ingress endpoints in spoke VPCs can consume the same fleet.
 
 ## What this builds
 
 | Layer | Resource | Notes |
 |---|---|---|
-| Hub VPC | `10.10.0.0/16`, IGW, 6 subnets (mgmt/untrust/trust x AZ a/b), NAT GW on mgmt (SCM mode only) | untrust RT 0/0 -> IGW; trust RT spoke CIDRs -> TGW |
-| Firewalls | `fw_count` VM-Series (default 2), AZ-striped a/b, 3 ENIs each (mgmt idx 0, untrust idx 1, trust idx 2), EIP on fw1 untrust | static host IPs `.11+N` per tier; IAM role `pan-hub-spoke-fw-ha-*` for S3 bootstrap read + HA failover API calls |
-| Transit | TGW with default association/propagation disabled, hub attachment in trust subnets with appliance mode, per-spoke attachments, hub-rt + spoke-rt | all spoke egress and east-west transits the firewalls |
-| Bootstrap | Private S3 bucket `pan-hub-spoke-fw-bootstrap-<rand>`, per-FW prefixes `fw1/`, `fw2/` with `config/`, `license/`, `software/`, `content/` | `init-cfg.txt` rendered per `management_mode` |
+| Hub VPC | `10.10.0.0/16`, IGW, 10 subnets (mgmt/data/trust/gwlbe/egress x AZ a/b), per-AZ NAT GWs in egress | trust rt 0/0 -> GWLBe; gwlbe rt 0/0 -> NAT + spokes -> TGW; egress rt 0/0 -> IGW + spokes -> GWLBe |
+| Firewalls | `fw_count` VM-Series fleet (default 2, min 1), AZ-striped a/b, 2 ENIs each (mgmt idx 0, data idx 1 with src/dst check off) | static host IPs `.11+N` per tier; IAM role `pan-hub-spoke-fw-*` grants S3 bootstrap read only |
+| GWLB | Gateway LB in the data subnets, GENEVE target group (port 6081, IP targets = FW data ENIs, TCP/443 health checks), endpoint service, per-AZ GWLBe in dedicated subnets | cross-zone LB enabled so one AZ's endpoint survives the other AZ's fleet loss |
+| Transit | TGW with default association/propagation disabled, hub attachment in trust subnets with appliance mode, per-spoke attachments, hub-rt + spoke-rt | all spoke egress and east-west transits the firewall fleet |
+| Bootstrap | Private S3 bucket `pan-hub-spoke-fw-bootstrap-<rand>`, per-FW prefixes `fw1/`, `fw2/` with `config/`, `license/`, `software/`, `content/` | `init-cfg.txt` rendered per `management_mode`; includes `plugin-op-commands=aws-gwlb-inspect:enable` |
 | Panorama | Single instance in mgmt-a (`10.10.1.10`), m5.2xlarge, 2 TB gp3 log volume (`management_mode = panorama` only) | required AMI ID variable |
 | Spoke-app | nginx Ubuntu VM (web) + RDS MySQL 8.0 across db-a/db-b; toggle `enable_nginx_mysql_workload` (default on) | SG allows 3306 only from the web subnet |
 | Spoke-eks | Private EKS cluster (`endpoint_private_access` only) + managed node group across nodes-a/nodes-b; toggle `enable_eks_workload` (default on) | doubles as the Prisma AIRS AI Gateway Hybrid data plane, see below |
@@ -147,7 +179,7 @@ Per-entry fields:
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| `cidr` | yes | - | Used for TGW hub-rt + hub trust RT route entries. Must match the existing VPC's CIDR when `create_vpc = false`. |
+| `cidr` | yes | - | Used for TGW hub-rt routes plus the hub gwlbe/egress return routes. Must match the existing VPC's CIDR when `create_vpc = false`. |
 | `subnets` | optional | `{}` | Map of subnet name -> `{ cidr, az_index }`. Only used when `create_vpc = true`. Workload modules reference subnets by name. |
 | `create_vpc` | optional | `true` | `false` skips VPC/subnet creation; only adds the TGW attachment. |
 | `existing_vpc_id` | when `create_vpc = false` | - | ID of the existing VPC. It must already contain at least one subnet. |
@@ -167,13 +199,13 @@ Workload modules:
 | Mode | What deploys | Bootstrap |
 |---|---|---|
 | `panorama` (default) | Panorama VM at `10.10.1.10` in the hub mgmt-a subnet | `init-cfg.txt` points at the Panorama private IP with `vm-auth-key`, `dgname`, `tplname` |
-| `scm` | No Panorama VM. NAT Gateway added for mgmt subnet egress to the SCM service edge | `init-cfg.txt` sets `panorama-server=cloud`, `dgname=<scm_folder>`, and the device certificate `vm-series-auto-registration-pin-id/value` |
+| `scm` | No Panorama VM. Mgmt route table gets a default route to the AZ-a NAT gateway for egress to the SCM service edge | `init-cfg.txt` sets `panorama-server=cloud`, `dgname=<scm_folder>`, and the device certificate `vm-series-auto-registration-pin-id/value` |
 
 SCM mode prereqs:
 
 1. SCM tenant with Strata Cloud Manager activated and the target folder created (Workflows > NGFW Setup > Folder Management). `scm_folder` must match its name exactly.
 2. Device certificate registration PIN generated in the Customer Support Portal (Assets > Device Certificates). Set `scm_registration_pin_id` / `scm_registration_pin_value`. PINs expire; regenerate if the apply is delayed past the PIN lifetime.
-3. Outbound internet from the FW mgmt ENI. This module handles it with the mgmt NAT Gateway; the egress source IP is exported as `mgmt_nat_public_ip`.
+3. Outbound internet from the FW mgmt ENI. This module handles it with the mgmt NAT route; the egress source IP is exported as `mgmt_nat_public_ip`.
 
 In SCM mode `panorama_vm_auth_key`, `panorama_device_group`, and `panorama_template_stack` are ignored. Firewalls appear in SCM under the folder after first boot + device cert install (allow ~10-15 min).
 
@@ -234,7 +266,7 @@ terraform apply \
 terraform apply
 ```
 
-Then in the Panorama UI: create device group `DG-AWS-USE1` and template stack `TS-AWS-USE1` (must match `variables.tf`), configure HA via template, push to firewalls.
+Then in the Panorama UI: create device group `DG-AWS-USE1` and template stack `TS-AWS-USE1` (must match `variables.tf`), configure the dataplane interface, zone, and an interface management profile permitting HTTPS on ethernet1/1 (required for GWLB health checks), then push to the firewalls.
 
 ### SCM mode: single-shot
 
@@ -246,12 +278,13 @@ Then in the Panorama UI: create device group `DG-AWS-USE1` and template stack `T
 #   scm_registration_pin_value = "<PIN value>"
 terraform apply
 # FWs boot, install the device cert via the registration PIN, and register
-# into the SCM folder. Push config from SCM once they show up.
+# into the SCM folder. Push config from SCM once they show up, including the
+# ethernet1/1 interface config + mgmt profile for GWLB health checks.
 ```
 
 ### Strategy A: `ssm` (default)
 
-Interface endpoints for SSM Session Manager in the hub mgmt subnets. No public IPs anywhere and no extra compute.
+Interface endpoints for SSM Session Manager in the hub mgmt subnets. No public IPs on the mgmt plane and no extra compute.
 
 **tfvars:**
 ```hcl
@@ -400,11 +433,13 @@ Notes:
 
 - **AMI IDs are inputs on purpose.** Marketplace AMI IDs differ per region and PAN-OS version, so this project requires `vm_series_ami_id` / `panorama_ami_id` instead of guessing product codes. Make sure the AMI is the **BYOL** flavor; PAYG changes the licensing model and the bootstrap auth codes won't apply.
 - **Instance sizes**: `m5.xlarge` (VM-Series) and `m5.2xlarge` (Panorama) are common defaults; consult the PAN-OS supported instance list for your target version before resizing.
-- **`op-command-modes=mgmt-interface-swap`** swaps eth0/eth1 roles on AWS so the dataplane owns the first ENI. Verify the resulting interface mapping against the ENI ordering here (mgmt idx 0, untrust idx 1, trust idx 2) for your PAN-OS version, and adjust the ordering or drop the swap if your design expects otherwise.
+- **`mgmt-interface-swap` is intentionally absent** from the bootstrap. PAN documents the swap as needed only when the GWLB target type is `instance` (traffic hits the first ENI). This design registers each firewall's dataplane ENI IP as an `ip` target, where PAN states the swap is not required, so mgmt stays on device index 0 and the dataplane on index 1.
+- **GWLB health checks need firewall-side config.** The target group probes TCP/443 against each data ENI (PAN docs: HTTP is refused by the VM-Series; HTTPS or TCP are the options). Targets stay unhealthy until you push an ethernet1/1 config with an interface management profile permitting HTTPS. Until then the GWLBe drops traffic; verify target health in the EC2 console after the first policy push.
 - **SSM strategy** deploys the endpoints, not an agent: PAN-OS/Panorama images do not run the SSM agent (see Strategy A caveats).
-- **Panorama licensing egress** (panorama mode): the mgmt subnets have no internet route by default (the NAT GW only deploys in SCM mode). For `request license fetch` to reach `updates.paloaltonetworks.com`, either temporarily set `enable_mgmt_nat_gateway` logic to your needs, license via the VPN path, or use the Panorama UI's offline activation. Review before first boot.
-- **HA failover** relies on the PAN-OS AWS plugin using the `${prefix}-fw-ha-*` instance profile to move secondary IPs, the untrust EIP, and rewrite routes. Configure HA (via Panorama template or manually) after bootstrap; Terraform only lays the IAM + network groundwork.
-- **Appliance mode** is enabled on the hub TGW attachment so both directions of a flow use the same AZ (and thus the same firewall). Do not disable it; asymmetric flows would be dropped by the stateful inspection.
+- **Panorama licensing egress** (panorama mode): the mgmt route table has no internet route by default (the NAT route only lands in SCM mode). For `request license fetch` to reach `updates.paloaltonetworks.com`, either temporarily enable the mgmt NAT route, license via the VPN path, or use the Panorama UI's offline activation. Review before first boot.
+- **Appliance mode** is enabled on the hub TGW attachment so both directions of a flow use the same AZ (and thus the same AZ-local GWLBe). Do not disable it; asymmetric flows would bypass the AZ-local inspection path. GWLB flow stickiness then pins the flow to one firewall.
+- **Cross-zone load balancing** is enabled on the GWLB so a single-firewall fleet (or a full-AZ outage) does not blackhole the other AZ's endpoint, at the cost of some cross-AZ data charges. Disable in `modules/gwlb` if you run >= 1 healthy firewall per AZ and want strict AZ containment.
+- **Jumbo frames** stay enabled (`op-command-modes=jumbo-frame`); GENEVE adds encapsulation overhead, so keep MTU headroom consistent across the path if you change this.
 - **Brownfield spokes** (`create_vpc = false`): TF attaches the VPC and installs hub-side routes only. You must point the existing VPC's route tables at the TGW yourself, and the VPC needs at least one subnet per AZ you want attached.
 - **BYOL auth codes** land in the bootstrap bucket. The bucket is private with public access blocked, but rotate/remove the codes after bootstrap completes if your compliance posture requires it.
 - **Do not commit** `terraform.tfvars` or state files; both carry secrets (auth keys, PINs, DB password). The `.gitignore` already covers them.

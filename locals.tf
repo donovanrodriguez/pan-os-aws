@@ -19,14 +19,21 @@ locals {
   vpn_admin_cidrs   = local.use_ipsec_vpn ? try(local.vpn_config_raw.admin_cidrs, local.vpn_on_prem_cidrs) : []
 
   # Hub subnet tiers striped across two AZs: fw1 lands in the -a subnets (AZ 0),
-  # fw2 in the -b subnets (AZ 1), and so on (i % 2).
+  # fw2 in the -b subnets (AZ 1), and so on (i % 2). Index map (cidrsubnet /24
+  # slices of the hub /16): 1/4 mgmt, 2/5 data (FW dataplane + GWLB nodes),
+  # 3/6 trust (TGW attachment), 7 bastion, 8/9 gwlbe (GWLB endpoints),
+  # 10/11 egress (per-AZ NAT GW, public).
   hub_subnets = {
-    mgmt_a    = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 1), az_index = 0 }
-    untrust_a = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 2), az_index = 0 }
-    trust_a   = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 3), az_index = 0 }
-    mgmt_b    = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 4), az_index = 1 }
-    untrust_b = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 5), az_index = 1 }
-    trust_b   = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 6), az_index = 1 }
+    mgmt_a   = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 1), az_index = 0 }
+    data_a   = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 2), az_index = 0 }
+    trust_a  = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 3), az_index = 0 }
+    mgmt_b   = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 4), az_index = 1 }
+    data_b   = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 5), az_index = 1 }
+    trust_b  = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 6), az_index = 1 }
+    gwlbe_a  = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 8), az_index = 0 }
+    gwlbe_b  = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 9), az_index = 1 }
+    egress_a = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 10), az_index = 0 }
+    egress_b = { cidr = cidrsubnet(var.hub_vpc_cidr, 8, 11), az_index = 1 }
   }
 
   # Public jump-host subnet, only materialized by the bastion_vm strategy.
@@ -48,11 +55,12 @@ locals {
 
   fws = {
     for i in range(var.fw_count) : format("fw%d", i + 1) => {
-      az_suffix  = i % 2 == 0 ? "a" : "b"
-      hostname   = format("pan-fw%d", i + 1)
-      mgmt_ip    = cidrhost(local.hub_subnets[i % 2 == 0 ? "mgmt_a" : "mgmt_b"].cidr, 11 + i)
-      untrust_ip = cidrhost(local.hub_subnets[i % 2 == 0 ? "untrust_a" : "untrust_b"].cidr, 11 + i)
-      trust_ip   = cidrhost(local.hub_subnets[i % 2 == 0 ? "trust_a" : "trust_b"].cidr, 11 + i)
+      az_suffix = i % 2 == 0 ? "a" : "b"
+      hostname  = format("pan-fw%d", i + 1)
+      mgmt_ip   = cidrhost(local.hub_subnets[i % 2 == 0 ? "mgmt_a" : "mgmt_b"].cidr, 11 + i)
+      data_ip   = cidrhost(local.hub_subnets[i % 2 == 0 ? "data_a" : "data_b"].cidr, 11 + i)
     }
   }
+
+  spoke_cidrs = [for k, v in var.protected_vpcs : v.cidr]
 }

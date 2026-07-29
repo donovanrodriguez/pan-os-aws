@@ -13,12 +13,12 @@ variable "tags" {
 }
 variable "hub_vpc_id" { type = string }
 variable "hub_attachment_subnet_ids" {
-  description = "Hub subnets hosting the TGW attachment ENIs (= trust subnets, one per AZ) so spoke traffic returns into the firewall trust tier."
+  description = "Hub subnets hosting the TGW attachment ENIs (= trust subnets, one per AZ); their route tables force everything through the AZ-local GWLBe."
   type        = list(string)
 }
-variable "hub_trust_route_table_id" {
-  description = "Hub trust route table: receives per-spoke CIDR + on-prem routes -> TGW (created here so they order after the hub attachment)."
-  type        = string
+variable "hub_gwlbe_route_table_ids" {
+  description = "Per-AZ hub GWLBe-subnet route tables: each receives per-spoke CIDR + on-prem routes -> TGW so post-inspection traffic returns to the TGW (created here so they order after the hub attachment)."
+  type        = map(string)
 }
 variable "hub_mgmt_route_table_id" {
   description = "Hub mgmt route table: receives on-prem routes -> TGW for the ipsec_vpn mgmt strategy."
@@ -150,19 +150,39 @@ resource "aws_route" "spoke_default_to_tgw" {
   depends_on             = [aws_ec2_transit_gateway_vpc_attachment.spoke]
 }
 
-# Return path: firewall trust ENIs forward spoke-bound traffic back to the TGW.
-resource "aws_route" "hub_trust_to_spoke" {
-  for_each               = { for k, s in var.spokes : k => s.cidr }
-  route_table_id         = var.hub_trust_route_table_id
-  destination_cidr_block = each.value
+# Return path: post-inspection traffic re-emerging at a GWLBe and bound for a
+# spoke (or on-prem) is handed back to the TGW. One route per AZ-local GWLBe
+# route table keeps the hop AZ-symmetric with appliance mode.
+locals {
+  gwlbe_spoke_routes = {
+    for pair in setproduct(keys(var.hub_gwlbe_route_table_ids), keys(var.spokes)) :
+    "${pair[0]}-${pair[1]}" => {
+      az   = pair[0]
+      cidr = var.spokes[pair[1]].cidr
+    }
+  }
+
+  gwlbe_onprem_routes = {
+    for pair in setproduct(keys(var.hub_gwlbe_route_table_ids), var.enable_vpn_routing ? var.vpn_on_prem_cidrs : []) :
+    "${pair[0]}-${pair[1]}" => {
+      az   = pair[0]
+      cidr = pair[1]
+    }
+  }
+}
+
+resource "aws_route" "hub_gwlbe_to_spoke" {
+  for_each               = local.gwlbe_spoke_routes
+  route_table_id         = var.hub_gwlbe_route_table_ids[each.value.az]
+  destination_cidr_block = each.value.cidr
   transit_gateway_id     = aws_ec2_transit_gateway.this.id
   depends_on             = [aws_ec2_transit_gateway_vpc_attachment.hub]
 }
 
-resource "aws_route" "hub_trust_to_onprem" {
-  for_each               = var.enable_vpn_routing ? toset(var.vpn_on_prem_cidrs) : toset([])
-  route_table_id         = var.hub_trust_route_table_id
-  destination_cidr_block = each.value
+resource "aws_route" "hub_gwlbe_to_onprem" {
+  for_each               = local.gwlbe_onprem_routes
+  route_table_id         = var.hub_gwlbe_route_table_ids[each.value.az]
+  destination_cidr_block = each.value.cidr
   transit_gateway_id     = aws_ec2_transit_gateway.this.id
   depends_on             = [aws_ec2_transit_gateway_vpc_attachment.hub]
 }

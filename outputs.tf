@@ -27,9 +27,14 @@ output "fw_instance_ids" {
   value = module.firewalls.fw_instance_ids
 }
 
-output "fw1_untrust_eip" {
-  description = "Elastic IP on fw1's untrust ENI (public ingress/egress anchor)."
-  value       = module.firewalls.fw1_untrust_eip
+output "gwlb_endpoint_service_name" {
+  description = "GWLB VPC endpoint service name. Consume it for distributed GWLBe (inbound/N-S) endpoints in other VPCs."
+  value       = module.gwlb.endpoint_service_name
+}
+
+output "gwlbe_ids" {
+  description = "Per-AZ GatewayLoadBalancer VPC endpoint IDs in the hub (keys: a, b)."
+  value       = module.gwlb.gwlbe_ids
 }
 
 output "tgw_id" {
@@ -38,8 +43,13 @@ output "tgw_id" {
 }
 
 output "mgmt_nat_public_ip" {
-  description = "NAT Gateway egress IP for the hub mgmt subnets (SCM mode). FWs reach the SCM service edge from this address."
-  value       = module.hub_network.mgmt_nat_public_ip
+  description = "AZ-a NAT Gateway public IP. In SCM mode the FW mgmt ENIs reach the SCM service edge from this address; inspected spoke egress uses the per-AZ NAT IPs (nat_public_ips)."
+  value       = module.hub_network.nat_public_ips["a"]
+}
+
+output "nat_public_ips" {
+  description = "Per-AZ egress NAT Gateway public IPs (keys: a, b). All inspected internet-bound traffic sources from these."
+  value       = module.hub_network.nat_public_ips
 }
 
 output "bootstrap_bucket_name" {

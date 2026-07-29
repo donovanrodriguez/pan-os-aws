@@ -61,10 +61,10 @@ check "mysql_password_required_for_workload" {
   }
 }
 
-check "fw_count_minimum" {
+check "fw_count_redundancy" {
   assert {
     condition     = var.fw_count >= 2
-    error_message = "fw_count below 2 defeats the HA pair; keep at least two firewalls."
+    error_message = "fw_count = 1 deploys with no firewall redundancy: GWLB health checks detect failure but there is no healthy target to fail over to. Fine for labs; use >= 2 elsewhere."
   }
 }
 

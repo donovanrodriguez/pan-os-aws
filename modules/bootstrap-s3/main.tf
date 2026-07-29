@@ -82,6 +82,14 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "bootstrap" {
 
 # One PAN-OS bootstrap package per firewall under <fw-key>/. The firewall's
 # user_data points at "bucket/<fw-key>" and the instance role grants read.
+#
+# GWLB bootstrap notes (verified against PAN VM-Series docs):
+#   - plugin-op-commands=aws-gwlb-inspect:enable is the documented switch that
+#     makes the firewall process GENEVE traffic from GWLB endpoints.
+#   - op-command-modes keeps jumbo-frame only. mgmt-interface-swap is dropped:
+#     PAN documents it as needed only when the GWLB target type is "instance"
+#     (traffic hits the first ENI); this design registers the dataplane ENI IP
+#     directly as an IP target, where PAN states the swap is not needed.
 resource "aws_s3_object" "init_cfg" {
   for_each     = var.fw_configs
   bucket       = aws_s3_bucket.bootstrap.id

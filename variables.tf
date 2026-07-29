@@ -106,12 +106,12 @@ variable "vpn_config_path" {
 }
 
 variable "fw_count" {
-  description = "Number of VM-Series firewalls. Instances are AZ-striped a/b with static host IPs .11+N in each hub subnet tier."
+  description = "Number of VM-Series firewalls in the GWLB fleet. Instances are AZ-striped a/b with static host IPs .11+N in each hub subnet tier. GWLB health checks handle failover, so 1 is a valid (non-redundant) minimum."
   type        = number
   default     = 2
   validation {
-    condition     = var.fw_count >= 2 && var.fw_count <= 8
-    error_message = "fw_count must be between 2 and 8."
+    condition     = var.fw_count >= 1 && var.fw_count <= 8
+    error_message = "fw_count must be between 1 and 8."
   }
 }
 
