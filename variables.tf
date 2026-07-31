@@ -136,9 +136,16 @@ variable "vm_series_instance_type" {
 }
 
 variable "panorama_ami_id" {
-  description = "AMI ID of the Panorama BYOL Marketplace image in var.region. Required when management_mode = panorama; unused in scm mode."
+  description = "AMI ID of the Panorama BYOL Marketplace image in var.region. Null selects the most recent image for panorama_product_code automatically. Unused in scm mode."
   type        = string
   default     = null
+}
+
+# BYOL listing product code, as published in the PaloAltoNetworks/terraform-aws-swfw-modules AMI lookup.
+variable "panorama_product_code" {
+  description = "Marketplace product code used for the automatic Panorama AMI lookup. The default is the BYOL listing."
+  type        = string
+  default     = "eclz7j04vu9lf8ont8ta3n17o"
 }
 
 # Consult the Panorama setup prerequisites in the PAN docs before downsizing.

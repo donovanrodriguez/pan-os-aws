@@ -133,7 +133,7 @@ The common alternative is a classic active/passive VM-Series HA pair: an EIP anc
 | GWLB | Gateway LB in the data subnets, GENEVE target group (port 6081, IP targets = FW data ENIs, TCP/443 health checks), endpoint service, per-AZ GWLBe in dedicated subnets | cross-zone LB enabled so one AZ's endpoint survives the other AZ's fleet loss |
 | Transit | TGW with default association/propagation disabled, hub attachment in trust subnets with appliance mode, per-spoke attachments, hub-rt + spoke-rt | all spoke egress and east-west transits the firewall fleet |
 | Bootstrap | Private S3 bucket `pan-hub-spoke-fw-bootstrap-<rand>`, per-FW prefixes `fw1/`, `fw2/` with `config/`, `license/`, `software/`, `content/` | `init-cfg.txt` rendered per `management_mode`; includes `plugin-op-commands=aws-gwlb-inspect:enable` |
-| Panorama | Single instance in mgmt-a (`10.10.1.10`), m5.2xlarge, 2 TB gp3 log volume (`management_mode = panorama` only) | required AMI ID variable |
+| Panorama | Single instance in mgmt-a (`10.10.1.10`), m5.2xlarge, 2 TB gp3 log volume (`management_mode = panorama` only) | AMI auto-resolved from the BYOL product code; pin with `panorama_ami_id` |
 | Spoke-app | nginx Ubuntu VM (web) + RDS MySQL 8.0 across db-a/db-b; toggle `enable_nginx_mysql_workload` (default on) | SG allows 3306 only from the web subnet |
 | Spoke-eks | Private EKS cluster (`endpoint_private_access` only) + managed node group across nodes-a/nodes-b; toggle `enable_eks_workload` (default on) | general-purpose private Kubernetes workload spoke; example use case below |
 | Mgmt access | one of: SSM interface endpoints, public jump host, or TGW site-to-site VPN | `mgmt_access_strategy` |
@@ -227,7 +227,7 @@ After apply, `terraform output connect_hint` prints the exact command for the ac
 2. Marketplace subscriptions accepted once per account for both BYOL listings:
    - Palo Alto Networks VM-Series Next-Generation Firewall (BYOL)
    - Palo Alto Networks Panorama (BYOL)
-   Accept them in the AWS Marketplace console, then copy the AMI ID for your region into `vm_series_ami_id` / `panorama_ami_id`. The Marketplace listing page shows the AMI ID per region under "Launch new instance"; alternatively use `aws ec2 describe-images --owners aws-marketplace --filters "Name=name,Values=*<listing name fragment>*"` and pick the BYOL image for your target PAN-OS version. This project does not hardcode product codes; verify the AMI against the listing you subscribed to.
+   Accept them in the AWS Marketplace console. AMI IDs then resolve automatically at plan time from the BYOL product codes (`vm_series_product_code` / `panorama_product_code`); set `vm_series_ami_id` / `panorama_ami_id` to pin a specific release instead of the most recent image.
 3. PAN-OS BYOL auth codes from your CSP/CSSP portal (`vm_series_auth_codes`). Panorama needs its own BYOL auth code (separate SKU) for first-boot licensing.
 4. `management_mode = panorama`: Panorama VM auth key. Circular dependency: apply Panorama first, generate the key on it, then run the full apply (walkthrough below).
 5. `management_mode = scm`: SCM tenant + folder + device cert registration PIN. No phased apply needed.
@@ -437,7 +437,7 @@ Notes:
 
 ## Caveats + things to verify before prod
 
-- **AMI IDs are required inputs by design.** Marketplace AMI IDs differ per region and PAN-OS version, so this project requires `vm_series_ami_id` / `panorama_ami_id` instead of assuming product codes. Make sure the AMI is the **BYOL** flavor; PAYG changes the licensing model and the bootstrap auth codes won't apply.
+- **AMI auto-lookup tracks the most recent BYOL image.** Both lookups filter on the BYOL product codes, so a new PAN-OS release changes what a fresh apply launches. Pin `vm_series_ami_id` / `panorama_ami_id` for reproducible fleets. If you override a product code, keep it a **BYOL** listing; PAYG changes the licensing model and the bootstrap auth codes won't apply.
 - **Instance sizes**: `m5.xlarge` (VM-Series) and `m5.2xlarge` (Panorama) are common defaults; consult the PAN-OS supported instance list for your target version before resizing.
 - **`mgmt-interface-swap` is intentionally absent** from the bootstrap. PAN documents the swap as needed only when the GWLB target type is `instance` (traffic hits the first ENI). This design registers each firewall's dataplane ENI IP as an `ip` target, where PAN states the swap is not required, so mgmt stays on device index 0 and the dataplane on index 1.
 - **GWLB health checks need firewall-side config.** The target group probes TCP/443 against each data ENI (PAN docs: HTTP is refused by the VM-Series; HTTPS or TCP are the options). Targets stay unhealthy until you push an ethernet1/1 config with an interface management profile permitting HTTPS. Until then the GWLBe drops traffic; verify target health in the EC2 console after the first policy push.

@@ -22,6 +22,24 @@ data "aws_ami" "vm_series" {
   }
 }
 
+# Most recent Panorama image for the configured Marketplace product code.
+# Only consulted in panorama mode when panorama_ami_id is not pinned.
+data "aws_ami" "panorama" {
+  count       = local.use_panorama && var.panorama_ami_id == null ? 1 : 0
+  most_recent = true
+  owners      = ["aws-marketplace"]
+
+  filter {
+    name   = "name"
+    values = ["Panorama-AWS*"]
+  }
+
+  filter {
+    name   = "product-code"
+    values = [var.panorama_product_code]
+  }
+}
+
 module "bootstrap_s3" {
   source = "./modules/bootstrap-s3"
 
@@ -101,7 +119,7 @@ module "panorama" {
   prefix = var.resource_prefix
   tags   = var.tags
 
-  ami_id        = var.panorama_ami_id
+  ami_id        = coalesce(var.panorama_ami_id, one(data.aws_ami.panorama[*].id))
   instance_type = var.panorama_instance_type
   key_name      = aws_key_pair.admin.key_name
   log_volume_gb = var.panorama_log_volume_gb
